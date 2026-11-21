@@ -80,6 +80,9 @@ Optional role mapping:
 - `OIDC_ADMIN_USERS`: usernames that get the admin role at sign-in.
 - `OIDC_GROUPS_CLAIM`: the ID-token claim that holds group membership.
 - `OIDC_ADMIN_GROUPS`: the groups in that claim that give the admin role.
+- `OIDC_ALLOWED_GROUPS`: the groups that may sign in at all. Leave it unset to let everyone in.
+
+The allow-list gates sign-in, not roles: an account in `OIDC_ADMIN_GROUPS` is still turned away at SSO sign-in if none of its groups are in `OIDC_ALLOWED_GROUPS`.
 
 See [Environment variables](/admin/environment/#authentication) for every OIDC variable.
 

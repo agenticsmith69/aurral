@@ -186,6 +186,16 @@ export function resolveOidcRole(username: string | null | undefined, claims: Oid
     : "user";
 }
 
+function isOidcGroupAllowed(claims: OidcClaims) {
+  const allowedGroups = parseCsv(process.env.OIDC_ALLOWED_GROUPS).map((g) => g.toLowerCase());
+  if (allowedGroups.length === 0) return true;
+
+  const groupsClaim = getGroupsClaim();
+  if (!groupsClaim) return false;
+
+  return normalizeGroups(claims[groupsClaim]).some((g) => allowedGroups.includes(g));
+}
+
 export function resolveOidcUsername(claims: OidcClaims = {}) {
   const claimName = getUsernameClaim();
   const primary = String(claims[claimName] || "").trim();
@@ -435,6 +445,12 @@ export async function handleOidcCallback(
   });
 
   const claims = await fetchEffectiveClaims(oidc, tokens, tokens.claims() || {});
+  if (!isOidcGroupAllowed(claims)) {
+    throw Object.assign(
+      new Error("Your identity provider groups do not allow signing in to Aurral"),
+      { status: 403 },
+    );
+  }
   const linked = pending.mode === "link";
   const user = linked
     ? linkOidcIdentity(config, claims, pending.linkUserId)

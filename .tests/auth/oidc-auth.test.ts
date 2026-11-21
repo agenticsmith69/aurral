@@ -106,6 +106,7 @@ function resetOidcEnv() {
   delete process.env.OIDC_ADMIN_USERS;
   delete process.env.OIDC_GROUPS_CLAIM;
   delete process.env.OIDC_ADMIN_GROUPS;
+  delete process.env.OIDC_ALLOWED_GROUPS;
   delete process.env.OIDC_LOGOUT_URL;
   delete process.env.OIDC_TOKEN_ENDPOINT_AUTH_METHOD;
   delete process.env.AUTH_PROXY_ENABLED;
@@ -556,6 +557,95 @@ test("OIDC groups claim ignores UserInfo-only admin groups", async () => {
     assert.equal(callback.user.username, "userinfo-user");
     assert.ok(callback.user);
     assert.equal(callback.user.role, "user");
+  } finally {
+    await pending.close();
+  }
+});
+
+test("OIDC callback blocks sign-in when no group is on the allow-list", async () => {
+  const pending = await createPendingOidcLogin({
+    idTokenClaims: { preferred_username: "denied-user", groups: ["contractors"] },
+    envOverrides: {
+      OIDC_GROUPS_CLAIM: "groups",
+      OIDC_ALLOWED_GROUPS: "admins,aurral-admins",
+    },
+  });
+
+  try {
+    await assert.rejects(
+      () =>
+        handleOidcCallback({ state: pending.state, code: "authorization-code" }, pending.cookie),
+      {
+        status: 403,
+        message: "Your identity provider groups do not allow signing in to Aurral",
+      },
+    );
+    assert.equal(userOps.countUsers(), 0);
+    assert.equal(
+      db.prepare<[], { count: number }>("SELECT COUNT(*) AS count FROM sessions").get()?.count,
+      0,
+    );
+  } finally {
+    await pending.close();
+  }
+});
+
+test("OIDC callback allows sign-in when a group is on the allow-list", async () => {
+  const pending = await createPendingOidcLogin({
+    idTokenClaims: { preferred_username: "allowed-user", groups: ["viewers", "admins"] },
+    envOverrides: {
+      OIDC_GROUPS_CLAIM: "groups",
+      OIDC_ADMIN_GROUPS: "admins",
+      OIDC_ALLOWED_GROUPS: "Owner, ADMINS",
+    },
+  });
+
+  try {
+    const callback = await handleOidcCallback(
+      { state: pending.state, code: "authorization-code" },
+      pending.cookie,
+    );
+    assert.ok(callback.user);
+    assert.equal(callback.user.username, "allowed-user");
+    assert.equal(callback.user.role, "admin");
+  } finally {
+    await pending.close();
+  }
+});
+
+test("OIDC callback blocks sign-in when the groups claim is missing from the token", async () => {
+  const pending = await createPendingOidcLogin({
+    idTokenClaims: { preferred_username: "no-groups-user" },
+    envOverrides: {
+      OIDC_GROUPS_CLAIM: "groups",
+      OIDC_ALLOWED_GROUPS: "admins",
+    },
+  });
+
+  try {
+    await assert.rejects(
+      () =>
+        handleOidcCallback({ state: pending.state, code: "authorization-code" }, pending.cookie),
+      { status: 403 },
+    );
+    assert.equal(userOps.countUsers(), 0);
+  } finally {
+    await pending.close();
+  }
+});
+
+test("OIDC callback blocks sign-in when an allow-list is set without OIDC_GROUPS_CLAIM", async () => {
+  const pending = await createPendingOidcLogin({
+    envOverrides: { OIDC_ALLOWED_GROUPS: "admins" },
+  });
+
+  try {
+    await assert.rejects(
+      () =>
+        handleOidcCallback({ state: pending.state, code: "authorization-code" }, pending.cookie),
+      { status: 403 },
+    );
+    assert.equal(userOps.countUsers(), 0);
   } finally {
     await pending.close();
   }
@@ -1032,6 +1122,24 @@ test("a suspended user cannot complete an SSO link", async () => {
   const provider = await createReusableOidcProvider();
   try {
     await assert.rejects(() => provider.signIn(linkTo(user.id)), { status: 403 });
+    assert.equal(userIdentityOps.countForUser(user.id), 0);
+  } finally {
+    await provider.close();
+  }
+});
+
+test("a user outside the group allow-list cannot complete an SSO link", async () => {
+  completeOnboarding();
+  const user = userOps.createUser("dave", "hash", "user", null);
+  assert.ok(user != null);
+  process.env.OIDC_GROUPS_CLAIM = "groups";
+  process.env.OIDC_ALLOWED_GROUPS = "admins";
+  const provider = await createReusableOidcProvider();
+  try {
+    await assert.rejects(() => provider.signIn(linkTo(user.id)), {
+      status: 403,
+      message: "Your identity provider groups do not allow signing in to Aurral",
+    });
     assert.equal(userIdentityOps.countForUser(user.id), 0);
   } finally {
     await provider.close();
